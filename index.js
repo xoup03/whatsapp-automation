@@ -44,12 +44,31 @@ client.on('authenticated', () => {
 // Initialize the WhatsApp client
 client.initialize();
 
-// Route to get the current QR code
+// Route to get the current QR code as HTML
 app.get('/qr', (req, res) => {
   if (qrCodeData) {
-    return res.json({ qr: qrCodeData });
+    return res.send(`
+      <html>
+        <head>
+          <title>WhatsApp QR Code</title>
+        </head>
+        <body style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh;">
+          <h1>Scan the QR Code to Login</h1>
+          <img src="${qrCodeData}" alt="QR Code" />
+        </body>
+      </html>
+    `);
   } else {
-    return res.status(400).json({ error: 'QR code not generated yet' });
+    return res.status(400).send(`
+      <html>
+        <head>
+          <title>No QR Code</title>
+        </head>
+        <body style="text-align: center; padding: 2rem;">
+          <h1>QR code not generated yet</h1>
+        </body>
+      </html>
+    `);
   }
 });
 
