@@ -1,0 +1,9 @@
+version: '3'
+services:
+  whatsapp:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./session:/app/session
+    restart: always

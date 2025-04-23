@@ -1,0 +1,138 @@
+const express = require('express');
+const { Client, MessageMedia, LocalAuth } = require('whatsapp-web.js');
+const qrcode = require('qrcode');
+
+const app = express();
+
+// Initialize the client with LocalAuth for session persistence
+const client = new Client({
+  authStrategy: new LocalAuth(), // This will store session data locally
+  puppeteer: {
+    headless: true,  // Run in headless mode for production
+    args: ['--no-sandbox', '--disable-setuid-sandbox'], // Common arguments for Docker
+  },
+});
+
+// Middleware for parsing JSON requests
+app.use(express.json());
+
+// Store the QR code temporarily
+let qrCodeData = '';
+
+// Event listener when the client is ready
+client.on('ready', () => {
+  console.log('Client is ready!');
+});
+
+// Event listener for QR code generation (without printing it to the terminal)
+client.on('qr', (qr) => {
+  qrcode.toDataURL(qr, (err, url) => {
+    if (err) {
+      console.log('Error generating QR code:', err);
+    } else {
+      qrCodeData = url;
+      console.log('QR code generated!');
+    }
+  });
+});
+
+// Event listener for successful login
+client.on('authenticated', () => {
+  console.log('Client authenticated');
+});
+
+// Initialize the WhatsApp client
+client.initialize();
+
+// Route to get the current QR code
+app.get('/qr', (req, res) => {
+  if (qrCodeData) {
+    return res.json({ qr: qrCodeData });
+  } else {
+    return res.status(400).json({ error: 'QR code not generated yet' });
+  }
+});
+
+// Route to send a text message with an image
+app.post('/send', async (req, res) => {
+  const { number, message, imageUrl } = req.body;
+
+  if (!number || !message || !imageUrl) {
+    return res.status(400).json({ error: 'Number, message, and imageUrl are required' });
+  }
+
+  try {
+    // Format the number to WhatsApp's required format (e.g., "910000000670@c.us")
+    const chatId = `${number}@c.us`;
+    
+    // Get the chat by ID
+    const chat = await client.getChatById(chatId);
+
+    // Send the text message
+    await chat.sendMessage(message);
+
+    // Convert the image URL to a MessageMedia object
+    const media = MessageMedia.fromUrl(imageUrl);
+
+    // Send the image
+    await chat.sendMessage(media);
+
+    res.json({ success: true, message: 'Text and image sent successfully' });
+  } catch (error) {
+    console.error('Error sending message with image:', error);
+    res.status(500).json({ error: 'Failed to send message with image' });
+  }
+});
+
+app.post("/send-text",async(req,res)=>{
+  const { number, textMessage } = req.body;
+  if (!number || !textMessage ) {
+    return res.status(400).json({ error: 'Number, textMessage are required' });
+  }
+
+  try {
+    const chatId = `${number}@c.us`;
+    const chat = await client.getChatById(chatId);
+
+    // Send the text message
+    await chat.sendMessage(textMessage);
+
+
+    res.json({ success: true, message: 'Message sent successfully with text' });
+  } catch (error) {
+    console.error('Error sending message:', error);
+    res.status(500).json({ error: 'Failed to send message.' });
+  }
+
+})
+
+// Route to handle message sending (text and image)
+app.post('/send-text-image', async (req, res) => {
+  const { number, textMessage, imageUrl } = req.body;
+  
+  if (!number || !textMessage || !imageUrl) {
+    return res.status(400).json({ error: 'Number, textMessage, and imageUrl are required' });
+  }
+
+  try {
+    const chatId = `${number}@c.us`;
+    const chat = await client.getChatById(chatId);
+
+    // Send the text message
+    await chat.sendMessage(textMessage);
+
+    // Send the image
+    const media = MessageMedia.fromUrl(imageUrl);
+    await chat.sendMessage(media);
+
+    res.json({ success: true, message: 'Message sent successfully with text and image.' });
+  } catch (error) {
+    console.error('Error sending message:', error);
+    res.status(500).json({ error: 'Failed to send message.' });
+  }
+});
+
+// Start the server
+app.listen(8000, () => {
+  console.log('Server started on port 8000');
+});
