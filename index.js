@@ -53,84 +53,39 @@ app.get('/qr', (req, res) => {
   }
 });
 
+app.get("/",async(req,res)=>{
+  return res.status(200).send("hello xoup whatsapp ");
+})
+
 // Route to send a text message with an image
 app.post('/send', async (req, res) => {
   const { number, message, imageUrl } = req.body;
 
-  if (!number || !message || !imageUrl) {
-    return res.status(400).json({ error: 'Number, message, and imageUrl are required' });
+  if (!number || (!message && !imageUrl)) {
+    return res.status(400).json({ error: 'Number and at least message or imageUrl are required' });
   }
 
   try {
-    // Format the number to WhatsApp's required format (e.g., "910000000670@c.us")
     const chatId = `${number}@c.us`;
-    
-    // Get the chat by ID
-    const chat = await client.getChatById(chatId);
 
-    // Send the text message
-    await chat.sendMessage(message);
+    if (imageUrl) {
+      // Get media and send with caption
+      const media = await MessageMedia.fromUrl(imageUrl);
+      await client.sendMessage(chatId, media, { caption: message || '' });
+    } else {
+      // Send only text message
+      await client.sendMessage(chatId, message);
+    }
 
-    // Convert the image URL to a MessageMedia object
-    const media = MessageMedia.fromUrl(imageUrl);
-
-    // Send the image
-    await chat.sendMessage(media);
-
-    res.json({ success: true, message: 'Text and image sent successfully' });
+    res.json({ success: true, message: 'Message sent successfully' });
   } catch (error) {
-    console.error('Error sending message with image:', error);
-    res.status(500).json({ error: 'Failed to send message with image' });
+    console.error('Error sending message:', error);
+    res.status(500).json({ error: 'Failed to send message' });
   }
 });
 
-app.post("/send-text",async(req,res)=>{
-  const { number, textMessage } = req.body;
-  if (!number || !textMessage ) {
-    return res.status(400).json({ error: 'Number, textMessage are required' });
-  }
-
-  try {
-    const chatId = `${number}@c.us`;
-    const chat = await client.getChatById(chatId);
-
-    // Send the text message
-    await chat.sendMessage(textMessage);
 
 
-    res.json({ success: true, message: 'Message sent successfully with text' });
-  } catch (error) {
-    console.error('Error sending message:', error);
-    res.status(500).json({ error: 'Failed to send message.' });
-  }
-
-})
-
-// Route to handle message sending (text and image)
-app.post('/send-text-image', async (req, res) => {
-  const { number, textMessage, imageUrl } = req.body;
-  
-  if (!number || !textMessage || !imageUrl) {
-    return res.status(400).json({ error: 'Number, textMessage, and imageUrl are required' });
-  }
-
-  try {
-    const chatId = `${number}@c.us`;
-    const chat = await client.getChatById(chatId);
-
-    // Send the text message
-    await chat.sendMessage(textMessage);
-
-    // Send the image
-    const media = MessageMedia.fromUrl(imageUrl);
-    await chat.sendMessage(media);
-
-    res.json({ success: true, message: 'Message sent successfully with text and image.' });
-  } catch (error) {
-    console.error('Error sending message:', error);
-    res.status(500).json({ error: 'Failed to send message.' });
-  }
-});
 
 // Start the server
 app.listen(8000, () => {
