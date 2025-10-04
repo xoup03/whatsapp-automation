@@ -1,6 +1,7 @@
-FROM node:18-slim
+# Use an AMD64 base image to avoid Apple Silicon issues
+FROM --platform=linux/amd64 node:18-slim
 
-# Install dependencies required by Chromium
+# Install system dependencies for Chromium (required by Puppeteer)
 RUN apt-get update && apt-get install -y \
     wget \
     ca-certificates \
@@ -23,10 +24,20 @@ RUN apt-get update && apt-get install -y \
     libgtk-3-0 \
     && rm -rf /var/lib/apt/lists/*
 
+# Set working directory
 WORKDIR /app
-COPY . .
 
+# Copy package files first (better build caching)
+COPY package*.json ./
+
+# Install dependencies
 RUN npm install
 
+# Copy rest of app files
+COPY . .
+
+# Expose port
 EXPOSE 8000
+
+# Run app
 CMD ["npm", "start"]
