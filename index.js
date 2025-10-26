@@ -2,6 +2,9 @@ import express from "express";
 import qrcode from "qrcode";
 import pkg from "whatsapp-web.js";
 import cors from "cors";
+import puppeteer from "puppeteer";
+import axios from "axios";
+import FormData from "form-data";
 
 const { Client, LocalAuth, MessageMedia, Events } = pkg;
 
@@ -108,6 +111,65 @@ app.post("/send", async (req, res) => {
     res.status(500).json({ error: "Failed to send message" });
   }
 });
+// Generate PDF from HTML
+app.post("/send-bill", async (req, res) => {
+  const { x_origin_url } = req.headers;
+  const { html, number, message, bill } = req.body;
+
+  if (!x_origin_url) return res.status(400).json({ error: "x-origin-url header is required" });
+  if (!html || !number || !bill || !message) return res.status(400).json({ error: "HTML content, number, message, and bill are required" });
+
+  try {
+    // Generate PDF
+    const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: "networkidle0" });
+
+    const pdfBuffer = await page.pdf({
+      format: "A4",
+      margin: { top: "20mm", bottom: "20mm", left: "15mm", right: "15mm" },
+      printBackground: true,
+    });
+
+    await browser.close();
+
+    const KARTIQ_API_ENDPOINT = x_origin_url + "/api/v1/athena/bill/upload-pdf";
+
+    // Upload PDF
+    const form = new FormData();
+    form.append("bill", JSON.stringify(bill));
+    form.append("number", number);
+    form.append("message", message);
+    form.append("file", pdfBuffer, { filename: "bill.pdf", contentType: "application/pdf" });
+
+    const apiResponse = await axios.post(KARTIQ_API_ENDPOINT, form, {
+      headers: { ...form.getHeaders(), "x-api-key": process.env.KARTIQ_API_KEY },
+      maxBodyLength: Infinity,
+    });
+
+    // Send via WhatsApp
+    const pdfUri = apiResponse.data.url;
+    const chatId = `${number}@c.us`;
+    if (pdfUri) {
+      try {
+        const media = await MessageMedia.fromUrl(pdfUri);
+        await client.sendMessage(chatId, media, { caption: message });
+      } catch (whatsappErr) {
+        console.error("Failed to send PDF via WhatsApp:", whatsappErr);
+        await client.sendMessage(chatId, message);
+      }
+    } else {
+      await client.sendMessage(chatId, message);
+    }
+
+    res.status(200).json({ success: true, apiResponse: apiResponse.data });
+  } catch (err) {
+    console.error("Error sending bill:", err);
+    res.status(500).json({ error: "Failed to generate/send PDF" });
+  }
+});
+
+
 
 // Start Express server
 const PORT = process.env.PORT || 8000;

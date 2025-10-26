@@ -1,5 +1,5 @@
 # Use an AMD64 base image to avoid Apple Silicon issues
-FROM --platform=linux/amd64 node:18-slim
+FROM --platform=linux/amd64 node:22-slim
 
 # Install system dependencies for Chromium (required by Puppeteer)
 RUN apt-get update && apt-get install -y \
