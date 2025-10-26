@@ -1,16 +1,17 @@
 import express from "express";
+import AWS from "aws-sdk";
 import qrcode from "qrcode";
 import pkg from "whatsapp-web.js";
 import cors from "cors";
 import puppeteer from "puppeteer";
-import axios from "axios";
-import FormData from "form-data";
+import dotenv from "dotenv";
+dotenv.config();
 
 const { Client, LocalAuth, MessageMedia, Events } = pkg;
 
 const app = express();
 
-app.use(cors()); 
+app.use(cors());
 app.use(express.json());
 
 let qrCodeData = ""; // store QR temporarily
@@ -52,6 +53,43 @@ client.on(Events.DISCONNECTED, (reason) => {
 // Initialize WhatsApp client
 client.initialize();
 
+
+
+// Configure AWS S3
+const s3 = new AWS.S3({
+  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+  region: process.env.AWS_REGION,
+});
+
+const uploadPDFBufferToS3 = async (buffer, bucketName, key) => {
+  try {
+    const params = {
+      Bucket: bucketName,
+      Key: key,
+      Body: buffer,
+    };
+    const data = await s3.upload(params).promise();
+    return data.Location;
+  } catch (error) {
+    console.error(
+      generateErrorLog("uploadBufferToS3", "Failed to upload buffer to S3", error, {
+        bucketName,
+        key,
+      })
+    );
+    return null;
+  }
+};
+
+const getPresignedUrl = (bucketName, key, expiresInSeconds = 3600) => {
+  return s3.getSignedUrl("getObject", {
+    Bucket: bucketName,
+    Key: key,
+    Expires: expiresInSeconds, // 1 hour by default
+  });
+};
+
 /* ------------------ ROUTES ------------------ */
 
 // Root route
@@ -88,7 +126,11 @@ app.get("/qr", (req, res) => {
 // Send message or media
 app.post("/send", async (req, res) => {
   const { number, message, imageUrl } = req.body;
+  const { "x-apikey": x_apikey} = req.headers;
 
+  if (x_apikey !== process.env.MY_API_KEY){
+    return res.status(403).json({ error: "Invalid API Key" });
+  }
   if (!number || (!message && !imageUrl)) {
     return res.status(400).json({
       error: "Number and at least one of 'message' or 'imageUrl' are required.",
@@ -113,15 +155,25 @@ app.post("/send", async (req, res) => {
 });
 // Generate PDF from HTML
 app.post("/send-bill", async (req, res) => {
-  const { x_origin_url } = req.headers;
+  const { x_origin_url, "x-apikey": x_apikey} = req.headers;
   const { html, number, message, bill } = req.body;
 
-  if (!x_origin_url) return res.status(400).json({ error: "x-origin-url header is required" });
-  if (!html || !number || !bill || !message) return res.status(400).json({ error: "HTML content, number, message, and bill are required" });
+  if (x_apikey !== process.env.MY_API_KEY){
+    return res.status(403).json({ error: "Invalid API Key" });
+  }
+  if (!x_origin_url)
+    return res.status(400).json({ error: "x-origin-url header is required" });
+  if (!html || !number || !bill || !message)
+    return res
+      .status(400)
+      .json({ error: "HTML content, number, message, and bill are required" });
 
   try {
     // Generate PDF
-    const browser = await puppeteer.launch({ headless: "new", args: ["--no-sandbox", "--disable-setuid-sandbox"] });
+    const browser = await puppeteer.launch({
+      headless: "new",
+      args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    });
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "networkidle0" });
 
@@ -133,26 +185,19 @@ app.post("/send-bill", async (req, res) => {
 
     await browser.close();
 
-    const KARTIQ_API_ENDPOINT = x_origin_url + "/api/v1/athena/bill/upload-pdf";
+    const bucketName = process.env.AWS_S3_BUCKET;
+    const key = `kartiq_bills/${bill.shop_name}/${bill.bill_number}.pdf`;
+    await uploadPDFBufferToS3(pdfBuffer , bucketName, key);
+    const pdfUrl = getPresignedUrl(bucketName, key, 3600);
 
-    // Upload PDF
-    const form = new FormData();
-    form.append("bill", JSON.stringify(bill));
-    form.append("number", number);
-    form.append("message", message);
-    form.append("file", pdfBuffer, { filename: "bill.pdf", contentType: "application/pdf" });
+    if (!pdfUrl){
+      throw new Error("Failed to upload bill PDF to S3");
+    }
 
-    const apiResponse = await axios.post(KARTIQ_API_ENDPOINT, form, {
-      headers: { ...form.getHeaders(), "x-api-key": process.env.KARTIQ_API_KEY },
-      maxBodyLength: Infinity,
-    });
-
-    // Send via WhatsApp
-    const pdfUri = apiResponse.data.url;
     const chatId = `${number}@c.us`;
-    if (pdfUri) {
+    if (pdfUrl) {
       try {
-        const media = await MessageMedia.fromUrl(pdfUri);
+        const media = await MessageMedia.fromUrl(pdfUrl);
         await client.sendMessage(chatId, media, { caption: message });
       } catch (whatsappErr) {
         console.error("Failed to send PDF via WhatsApp:", whatsappErr);
@@ -161,19 +206,16 @@ app.post("/send-bill", async (req, res) => {
     } else {
       await client.sendMessage(chatId, message);
     }
-
-    res.status(200).json({ success: true, apiResponse: apiResponse.data });
+    console.log("Bill sent successfully to", number);
+    res.status(200).json({ success: true, apiResponse: "Successfully sent bill" });
   } catch (err) {
     console.error("Error sending bill:", err);
     res.status(500).json({ error: "Failed to generate/send PDF" });
   }
 });
 
-
-
 // Start Express server
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => {
   console.log(`🌐 Server started on port ${PORT}`);
 });
-
