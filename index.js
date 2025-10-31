@@ -171,20 +171,16 @@ app.post("/send-bill", async (req, res) => {
     console.log("Generating PDF from HTML...");
     // Upload PDF to S3
     console.log("Uploading PDF to S3...");
-    const bucketName = process.env.AWS_S3_BUCKET;
-    const key = `kartiq_bills/${bill.shop_name}/${bill.bill_number}.pdf`;
-    await uploadPDFBufferToS3(pdfBuffer , bucketName, key);
-    const pdfUrl = getPresignedUrl(bucketName, key, 3600);
-    console.log("PDF uploaded to S3, URL:", pdfUrl);
 
     const chatId = `${number}@c.us`;
     // Send message with PDF
     console.log("Sending bill to", number);
+    let pdfUrl=null
     if (pdfUrl) {
       try {
         console.log("Sending Bill PDF via WhatsApp to", number);
-        const media = await MessageMedia.fromUrl(pdfUrl);
-        await client.sendMessage(chatId, media, { caption: message });
+
+        await client.sendMessage(chatId,message );
       } catch (whatsappErr) {
         console.error("Failed to send PDF via WhatsApp:", whatsappErr);
         await client.sendMessage(chatId, message);
@@ -205,5 +201,6 @@ const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => {
   console.log(`🌐 Server started on port ${PORT}`);
 });
+
 
 
