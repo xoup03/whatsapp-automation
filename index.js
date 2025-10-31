@@ -161,8 +161,6 @@ app.post("/send-bill", async (req, res) => {
   if (x_apikey !== process.env.MY_API_KEY){
     return res.status(403).json({ error: "Invalid API Key" });
   }
-  if (!x_origin_url)
-    return res.status(400).json({ error: "x-origin-url header is required" });
   if (!html || !number || !bill || !message)
     return res
       .status(400)
@@ -224,3 +222,4 @@ const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => {
   console.log(`🌐 Server started on port ${PORT}`);
 });
+
