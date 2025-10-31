@@ -170,33 +170,38 @@ app.post("/send-bill", async (req, res) => {
 
   try {
     // Generate PDF
+    console.log("Generating PDF from HTML...");
     const browser = await puppeteer.launch({
       headless: "new",
       args: ["--no-sandbox", "--disable-setuid-sandbox"],
     });
     const page = await browser.newPage();
     await page.setContent(html, { waitUntil: "networkidle0" });
-
+    console.log("HTML content set, generating PDF...");
     const pdfBuffer = await page.pdf({
       format: "A4",
       margin: { top: "20mm", bottom: "20mm", left: "15mm", right: "15mm" },
       printBackground: true,
     });
-
+    console.log("PDF generated successfully");
     await browser.close();
-
+    // Upload PDF to S3
+    console.log("Uploading PDF to S3...");
     const bucketName = process.env.AWS_S3_BUCKET;
     const key = `kartiq_bills/${bill.shop_name}/${bill.bill_number}.pdf`;
     await uploadPDFBufferToS3(pdfBuffer , bucketName, key);
     const pdfUrl = getPresignedUrl(bucketName, key, 3600);
-
+    console.log("PDF uploaded to S3, URL:", pdfUrl);
     if (!pdfUrl){
       throw new Error("Failed to upload bill PDF to S3");
     }
 
     const chatId = `${number}@c.us`;
+    // Send message with PDF
+    console.log("Sending bill to", number);
     if (pdfUrl) {
       try {
+        console.log("Sending Bill PDF via WhatsApp to", number);
         const media = await MessageMedia.fromUrl(pdfUrl);
         await client.sendMessage(chatId, media, { caption: message });
       } catch (whatsappErr) {
