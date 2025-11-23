@@ -53,8 +53,6 @@ client.on(Events.DISCONNECTED, (reason) => {
 // Initialize WhatsApp client
 client.initialize();
 
-
-
 // Configure AWS S3
 const s3 = new AWS.S3({
   accessKeyId: process.env.AWS_ACCESS_KEY_ID,
@@ -141,7 +139,10 @@ app.post("/send", async (req, res) => {
     const chatId = `${number}@c.us`;
 
     if (imageUrl) {
-      const media = await MessageMedia.fromUrl(imageUrl);
+      const media = await MessageMedia.fromUrl(imageUrl, {
+        unsafeMime: true,
+      });
+
       await client.sendMessage(chatId, media, { caption: message || "" });
     } else {
       await client.sendMessage(chatId, message);
