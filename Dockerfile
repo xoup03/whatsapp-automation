@@ -1,43 +1,35 @@
-# Use an AMD64 base image to avoid Apple Silicon issues
-FROM --platform=linux/amd64 node:22-slim
+FROM node:20-slim
 
-# Install system dependencies for Chromium (required by Puppeteer)
 RUN apt-get update && apt-get install -y \
-    wget \
+    chromium \
     ca-certificates \
     fonts-liberation \
-    libappindicator3-1 \
     libasound2 \
     libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libcups2 \
-    libdbus-1-3 \
-    libgdk-pixbuf2.0-0 \
-    libnspr4 \
+    libgtk-3-0 \
     libnss3 \
     libx11-xcb1 \
     libxcomposite1 \
     libxdamage1 \
     libxrandr2 \
-    xdg-utils \
-    libgbm1 \
-    libgtk-3-0 \
-    && rm -rf /var/lib/apt/lists/*
+    --no-install-recommends \
+ && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
+ENV NODE_ENV=production
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+
 WORKDIR /app
 
-# Copy package files first (better build caching)
 COPY package*.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 
-# Install dependencies
-RUN npm install
-
-# Copy rest of app files
 COPY . .
 
-# Expose port
-EXPOSE 8000
+RUN groupadd -r nodejs && useradd -r -g nodejs nodejs \
+ && chown -R nodejs:nodejs /app
 
-# Run app
-CMD ["npm", "start"]
+USER nodejs
+
+EXPOSE 8000
+CMD ["node", "index.js"]

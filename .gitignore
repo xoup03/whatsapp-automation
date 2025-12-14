@@ -72,3 +72,8 @@ dist/
 # Temporary files
 tmp/
 temp/
+
+# WhatsApp session data
+.wwebjs_auth/
+.wwebjs_cache/
+session/

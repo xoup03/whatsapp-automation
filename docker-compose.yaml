@@ -1,9 +1,22 @@
-version: '3'
 services:
   whatsapp:
     build: .
+    image: whatsapp-automation:latest
+    container_name: whatsapp-automation
+    restart: unless-stopped
+
     ports:
-      - "8000:8000"
+      - "8000:8000"   # remove later when behind nginx
+
+    environment:
+      MY_API_KEY: f52e22dcac324c71b254550caa10db9c
+      PUPPETEER_EXECUTABLE_PATH: /usr/bin/chromium
+
     volumes:
-      - ./session:/app/session
-    restart: always
+      - ./.wwebjs_auth:/app/.wwebjs_auth
+      - ./.wwebjs_cache:/app/.wwebjs_cache
+
+    mem_limit: 512m
+    mem_reservation: 384m
+    cpus: "0.5"
+    shm_size: "128mb"

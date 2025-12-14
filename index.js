@@ -1,207 +1,153 @@
 import express from "express";
-import AWS from "aws-sdk";
+import cors from "cors";
+import dotenv from "dotenv";
 import qrcode from "qrcode";
 import pkg from "whatsapp-web.js";
-import cors from "cors";
-import puppeteer from "puppeteer";
-import dotenv from "dotenv";
+import rateLimit from "express-rate-limit";
+
 dotenv.config();
-
 const { Client, LocalAuth, MessageMedia, Events } = pkg;
-
 const app = express();
+const allowedOriginRegex = /^https:\/\/([a-z0-9-]+\.)*xoup\.co\.in$/i;
 
-app.use(cors());
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow non-browser requests (curl, server-to-server)
+      if (!origin) return callback(null, true);
+
+      if (allowedOriginRegex.test(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Not allowed by CORS"));
+    },
+    methods: ["GET", "POST"],
+    allowedHeaders: ["Content-Type", "x-apikey"],
+    credentials: false,
+  })
+);
+
 app.use(express.json());
 
-let qrCodeData = ""; // store QR temporarily
+/* =========================
+   SECURITY
+   ========================= */
 
-// ✅ Initialize client using LocalAuth (session persistence)
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 20, // 20 requests per minute
+});
+
+const apiKeyMiddleware = (req, res, next) => {
+  if (req.headers["x-apikey"] !== process.env.MY_API_KEY) {
+    return res.status(403).json({ error: "Invalid API key" });
+  }
+  next();
+};
+
+/* =========================
+   STATE
+   ========================= */
+
+let qrCodeData = "";
+let isClientReady = false;
+let reconnecting = false;
+
+/* =========================
+   WHATSAPP CLIENT
+   ========================= */
+
 const client = new Client({
-  authStrategy: new LocalAuth({
-    clientId: "main-session", // optional unique ID for session folder
-  }),
+  authStrategy: new LocalAuth({ clientId: "main-session" }),
   puppeteer: {
-    executablePath: undefined,
     headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-crashpad",
+      "--disable-gpu",
+    ],
   },
 });
 
-// ✅ New event system (v1.34.1 uses named Events constants)
-client.on(Events.QR_RECEIVED, async (qr) => {
-  try {
-    qrCodeData = await qrcode.toDataURL(qr);
-    console.log("QR Code generated, visit /qr to view it");
-  } catch (err) {
-    console.error("Error generating QR code:", err);
-  }
-});
+/* =========================
+   EVENTS
+   ========================= */
 
-client.on(Events.AUTHENTICATED, () => {
-  console.log("✅ Client authenticated");
+client.on(Events.QR_RECEIVED, async (qr) => {
+  qrCodeData = await qrcode.toDataURL(qr);
+  console.log("📱 QR available at /qr");
 });
 
 client.on(Events.READY, () => {
-  console.log("🚀 WhatsApp client is ready!");
+  console.log("🚀 WhatsApp ready");
+  isClientReady = true;
+  reconnecting = false;
+  qrCodeData = "";
+});
+
+client.on(Events.AUTH_FAILURE, (msg) => {
+  console.error("❌ Auth failure:", msg);
+  isClientReady = false;
 });
 
 client.on(Events.DISCONNECTED, (reason) => {
-  console.log("❌ Client disconnected:", reason);
+  console.warn("⚠️ Disconnected:", reason);
+  isClientReady = false;
+
+  if (!reconnecting) {
+    reconnecting = true;
+    setTimeout(() => {
+      console.log("🔄 Reconnecting WhatsApp...");
+      client.initialize();
+    }, 10_000);
+  }
 });
 
-// Initialize WhatsApp client
 client.initialize();
 
-// Configure AWS S3
-const s3 = new AWS.S3({
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  region: process.env.AWS_REGION,
-});
+/* =========================
+   ROUTES
+   ========================= */
 
-const uploadPDFBufferToS3 = async (buffer, bucketName, key) => {
-  try {
-    const params = {
-      Bucket: bucketName,
-      Key: key,
-      Body: buffer,
-    };
-    const data = await s3.upload(params).promise();
-    return data.Location;
-  } catch (error) {
-    console.error(
-      generateErrorLog("uploadBufferToS3", "Failed to upload buffer to S3", error, {
-        bucketName,
-        key,
-      })
-    );
-    return null;
-  }
-};
-
-const getPresignedUrl = (bucketName, key, expiresInSeconds = 3600) => {
-  return s3.getSignedUrl("getObject", {
-    Bucket: bucketName,
-    Key: key,
-    Expires: expiresInSeconds, // 1 hour by default
-  });
-};
-
-/* ------------------ ROUTES ------------------ */
-
-// Root route
-app.get("/", (req, res) => {
-  res.status(200).send("Hello from Xoup WhatsApp Service 🚀");
-});
-
-// QR route
 app.get("/qr", (req, res) => {
-  if (qrCodeData) {
-    return res.send(`
-      <html>
-        <head>
-          <title>WhatsApp QR Code</title>
-        </head>
-        <body style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;">
-          <h1>Scan this QR Code to Login</h1>
-          <img src="${qrCodeData}" alt="QR Code" style="width:300px;height:300px;"/>
-        </body>
-      </html>
-    `);
-  } else {
-    return res.status(400).send(`
-      <html>
-        <head><title>No QR Yet</title></head>
-        <body style="text-align:center;padding:2rem;">
-          <h2>QR code not generated yet</h2>
-        </body>
-      </html>
-    `);
-  }
+  if (!qrCodeData) return res.status(404).send("QR not available");
+  res.send(`<img src="${qrCodeData}" width="300"/>`);
 });
 
-// Send message or media
-app.post("/send", async (req, res) => {
-  const { number, message, imageUrl } = req.body;
-  const { "x-apikey": x_apikey} = req.headers;
-
-  if (x_apikey !== process.env.MY_API_KEY){
-    return res.status(403).json({ error: "Invalid API Key" });
-  }
-  if (!number || (!message && !imageUrl)) {
-    return res.status(400).json({
-      error: "Number and at least one of 'message' or 'imageUrl' are required.",
-    });
-  }
+app.post("/send-text", apiLimiter, apiKeyMiddleware, async (req, res) => {
+  const { number, message } = req.body;
+  if (!isClientReady) return res.status(503).json({ error: "WhatsApp not ready" });
+  if (!number || !message) return res.status(400).json({ error: "number & message required" });
 
   try {
-    const chatId = `${number}@c.us`;
-
-    if (imageUrl) {
-      const media = await MessageMedia.fromUrl(imageUrl, {
-        unsafeMime: true,
-      });
-
-      await client.sendMessage(chatId, media, { caption: message || "" });
-    } else {
-      await client.sendMessage(chatId, message);
-    }
-
-    res.json({ success: true, message: "Message sent successfully" });
-  } catch (err) {
-    console.error("Error sending message:", err);
-    res.status(500).json({ error: "Failed to send message" });
+    await client.sendMessage(`${number}@c.us`, message);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: "Send failed" });
   }
 });
-// Generate PDF from HTML
-app.post("/send-bill", async (req, res) => {
-  const { x_origin_url, "x-apikey": x_apikey} = req.headers;
-  const { html, number, message, bill } = req.body;
 
-  if (x_apikey !== process.env.MY_API_KEY){
-    return res.status(403).json({ error: "Invalid API Key" });
-  }
-  if (!html || !number || !bill || !message)
-    return res
-      .status(400)
-      .json({ error: "HTML content, number, message, and bill are required" });
+app.post("/send", apiLimiter, apiKeyMiddleware, async (req, res) => {
+  const { number, imageUrl, caption } = req.body;
+  if (!isClientReady) return res.status(503).json({ error: "WhatsApp not ready" });
+  if (!number || !imageUrl) return res.status(400).json({ error: "number & imageUrl required" });
 
   try {
-    // Generate PDF
-    console.log("Generating PDF from HTML...");
-    // Upload PDF to S3
-    console.log("Uploading PDF to S3...");
-
-    const chatId = `${number}@c.us`;
-    // Send message with PDF
-    console.log("Sending bill to", number);
-    let pdfUrl=null
-    if (pdfUrl) {
-      try {
-        console.log("Sending Bill PDF via WhatsApp to", number);
-
-        await client.sendMessage(chatId,message );
-      } catch (whatsappErr) {
-        console.error("Failed to send PDF via WhatsApp:", whatsappErr);
-        await client.sendMessage(chatId, message);
-      }
-    } else {
-      await client.sendMessage(chatId, message);
-    }
-    console.log("Bill sent successfully to", number);
-    res.status(200).json({ success: true, apiResponse: "Successfully sent bill" });
-  } catch (err) {
-    console.error("Error sending bill:", err);
-    res.status(500).json({ error: "Failed to generate/send PDF" });
+    const media = await MessageMedia.fromUrl(imageUrl, { unsafeMime: true });
+    await client.sendMessage(`${number}@c.us`, media, { caption });
+    res.json({ success: true });
+  } catch {
+    res.status(500).json({ error: "Send failed" });
   }
 });
 
-// Start Express server
+/* =========================
+   START SERVER
+   ========================= */
+
 const PORT = process.env.PORT || 8000;
-app.listen(PORT, () => {
-  console.log(`🌐 Server started on port ${PORT}`);
-});
-
-
-
+app.listen(PORT, () => console.log(`🌐 Running on port ${PORT}`));
