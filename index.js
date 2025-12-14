@@ -10,23 +10,7 @@ const { Client, LocalAuth, MessageMedia, Events } = pkg;
 const app = express();
 const allowedOriginRegex = /^https:\/\/([a-z0-9-]+\.)*xoup\.co\.in$/i;
 
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // Allow non-browser requests (curl, server-to-server)
-      if (!origin) return callback(null, true);
-
-      if (allowedOriginRegex.test(origin)) {
-        return callback(null, true);
-      }
-
-      return callback(new Error("Not allowed by CORS"));
-    },
-    methods: ["GET", "POST"],
-    allowedHeaders: ["Content-Type", "x-apikey"],
-    credentials: false,
-  })
-);
+app.use(cors());
 
 app.use(express.json());
 
@@ -62,16 +46,15 @@ const client = new Client({
   authStrategy: new LocalAuth({ clientId: "main-session" }),
   puppeteer: {
     headless: true,
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
-      "--disable-crashpad",
       "--disable-gpu",
     ],
   },
 });
+
 
 /* =========================
    EVENTS

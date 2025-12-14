@@ -1,7 +1,6 @@
 FROM node:20-slim
 
 RUN apt-get update && apt-get install -y \
-    chromium \
     ca-certificates \
     fonts-liberation \
     libasound2 \
@@ -12,17 +11,17 @@ RUN apt-get update && apt-get install -y \
     libxcomposite1 \
     libxdamage1 \
     libxrandr2 \
+    libgbm1 \
+    xdg-utils \
     --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm ci --omit=dev
 
 COPY . .
 
