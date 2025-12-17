@@ -1,137 +1,150 @@
 import express from "express";
-import AWS from "aws-sdk";
 import qrcode from "qrcode";
 import pkg from "whatsapp-web.js";
 import cors from "cors";
-import puppeteer from "puppeteer";
 import dotenv from "dotenv";
+
 dotenv.config();
 
 const { Client, LocalAuth, MessageMedia, Events } = pkg;
 
 const app = express();
-
 app.use(cors());
 app.use(express.json());
 
-let qrCodeData = ""; // store QR temporarily
+/* ------------------ GLOBAL SAFETY ------------------ */
 
-// ✅ Initialize client using LocalAuth (session persistence)
+process.on("unhandledRejection", (reason) => {
+  console.error("❌ Unhandled Rejection:", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("❌ Uncaught Exception:", err);
+});
+
+/* ------------------ STATE ------------------ */
+
+let qrCodeData = "";
+let isClientReady = false;
+let lastQrTime = 0;
+
+/* ------------------ WHATSAPP CLIENT ------------------ */
+
 const client = new Client({
   authStrategy: new LocalAuth({
-    clientId: "main-session", // optional unique ID for session folder
+    clientId: "main-session",
+    dataPath: process.env.WWEBJS_AUTH_DIR || "/app/.wwebjs_auth",
   }),
   puppeteer: {
-    executablePath: undefined,
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    headless: "new",
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--disable-software-rasterizer",
+      "--no-zygote",
+      "--single-process",
+    ],
   },
 });
 
-// ✅ New event system (v1.34.1 uses named Events constants)
+/* ------------------ EVENTS ------------------ */
+
 client.on(Events.QR_RECEIVED, async (qr) => {
   try {
+    const now = Date.now();
+    if (now - lastQrTime < 10000) return; // debounce 10s
+    lastQrTime = now;
+
     qrCodeData = await qrcode.toDataURL(qr);
-    console.log("QR Code generated, visit /qr to view it");
+    console.log("📸 QR Code generated");
   } catch (err) {
-    console.error("Error generating QR code:", err);
+    console.error("QR generation error:", err);
   }
 });
 
 client.on(Events.AUTHENTICATED, () => {
-  console.log("✅ Client authenticated");
+  console.log("✅ WhatsApp authenticated");
 });
 
 client.on(Events.READY, () => {
-  console.log("🚀 WhatsApp client is ready!");
+  isClientReady = true;
+  qrCodeData = "";
+  console.log("🚀 WhatsApp client ready");
 });
 
-client.on(Events.DISCONNECTED, (reason) => {
-  console.log("❌ Client disconnected:", reason);
-});
+client.on(Events.DISCONNECTED, async (reason) => {
+  console.error("❌ WhatsApp disconnected:", reason);
+  isClientReady = false;
 
-// Initialize WhatsApp client
-client.initialize();
-
-// Configure AWS S3
-const s3 = new AWS.S3({
-  accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-  secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  region: process.env.AWS_REGION,
-});
-
-const uploadPDFBufferToS3 = async (buffer, bucketName, key) => {
   try {
-    const params = {
-      Bucket: bucketName,
-      Key: key,
-      Body: buffer,
-    };
-    const data = await s3.upload(params).promise();
-    return data.Location;
-  } catch (error) {
-    console.error(
-      generateErrorLog("uploadBufferToS3", "Failed to upload buffer to S3", error, {
-        bucketName,
-        key,
-      })
-    );
-    return null;
+    await client.destroy();
+  } catch (e) {
+    console.error("Destroy error:", e);
   }
-};
 
-const getPresignedUrl = (bucketName, key, expiresInSeconds = 3600) => {
-  return s3.getSignedUrl("getObject", {
-    Bucket: bucketName,
-    Key: key,
-    Expires: expiresInSeconds, // 1 hour by default
-  });
-};
+  setTimeout(() => {
+    console.log("♻️ Reinitializing WhatsApp client...");
+    client.initialize();
+  }, 5000);
+});
+
+/* ------------------ INIT ------------------ */
+
+console.log("⚙️ Initializing WhatsApp client...");
+client.initialize();
 
 /* ------------------ ROUTES ------------------ */
 
-// Root route
-app.get("/", (req, res) => {
-  res.status(200).send("Hello from Xoup WhatsApp Service 🚀");
+app.get("/", (_, res) => {
+  res.send("🚀 Xoup WhatsApp Service Running");
 });
 
-// QR route
-app.get("/qr", (req, res) => {
-  if (qrCodeData) {
-    return res.send(`
+app.get("/health", (_, res) => {
+  res.json({
+    ready: isClientReady,
+    uptime: process.uptime(),
+  });
+});
+
+app.get("/qr", (_, res) => {
+  if (!qrCodeData) {
+    return res.status(404).send(`
       <html>
-        <head>
-          <title>WhatsApp QR Code</title>
-        </head>
-        <body style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;">
-          <h1>Scan this QR Code to Login</h1>
-          <img src="${qrCodeData}" alt="QR Code" style="width:300px;height:300px;"/>
-        </body>
-      </html>
-    `);
-  } else {
-    return res.status(400).send(`
-      <html>
-        <head><title>No QR Yet</title></head>
         <body style="text-align:center;padding:2rem;">
-          <h2>QR code not generated yet</h2>
+          <h2>No QR code available</h2>
+          <p>Client may already be authenticated</p>
         </body>
       </html>
     `);
   }
+
+  res.send(`
+    <html>
+      <body style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;">
+        <h2>Scan QR Code</h2>
+        <img src="${qrCodeData}" width="300" />
+      </body>
+    </html>
+  `);
 });
 
-// Send message or media
 app.post("/send", async (req, res) => {
   const { number, message, imageUrl } = req.body;
-  const { "x-apikey": x_apikey} = req.headers;
+  const apiKey = req.headers["x-apikey"];
 
-  if (x_apikey !== process.env.MY_API_KEY){
+  if (apiKey !== process.env.MY_API_KEY) {
     return res.status(403).json({ error: "Invalid API Key" });
   }
+
+  if (!isClientReady) {
+    return res.status(503).json({ error: "WhatsApp not ready" });
+  }
+
   if (!number || (!message && !imageUrl)) {
     return res.status(400).json({
-      error: "Number and at least one of 'message' or 'imageUrl' are required.",
+      error: "number + message or imageUrl required",
     });
   }
 
@@ -143,65 +156,23 @@ app.post("/send", async (req, res) => {
         unsafeMime: true,
       });
 
-      await client.sendMessage(chatId, media, { caption: message || "" });
+      await client.sendMessage(chatId, media, {
+        caption: message || "",
+      });
     } else {
       await client.sendMessage(chatId, message);
     }
 
-    res.json({ success: true, message: "Message sent successfully" });
+    res.json({ success: true });
   } catch (err) {
-    console.error("Error sending message:", err);
-    res.status(500).json({ error: "Failed to send message" });
-  }
-});
-// Generate PDF from HTML
-app.post("/send-bill", async (req, res) => {
-  const { x_origin_url, "x-apikey": x_apikey} = req.headers;
-  const { html, number, message, bill } = req.body;
-
-  if (x_apikey !== process.env.MY_API_KEY){
-    return res.status(403).json({ error: "Invalid API Key" });
-  }
-  if (!html || !number || !bill || !message)
-    return res
-      .status(400)
-      .json({ error: "HTML content, number, message, and bill are required" });
-
-  try {
-    // Generate PDF
-    console.log("Generating PDF from HTML...");
-    // Upload PDF to S3
-    console.log("Uploading PDF to S3...");
-
-    const chatId = `${number}@c.us`;
-    // Send message with PDF
-    console.log("Sending bill to", number);
-    let pdfUrl=null
-    if (pdfUrl) {
-      try {
-        console.log("Sending Bill PDF via WhatsApp to", number);
-
-        await client.sendMessage(chatId,message );
-      } catch (whatsappErr) {
-        console.error("Failed to send PDF via WhatsApp:", whatsappErr);
-        await client.sendMessage(chatId, message);
-      }
-    } else {
-      await client.sendMessage(chatId, message);
-    }
-    console.log("Bill sent successfully to", number);
-    res.status(200).json({ success: true, apiResponse: "Successfully sent bill" });
-  } catch (err) {
-    console.error("Error sending bill:", err);
-    res.status(500).json({ error: "Failed to generate/send PDF" });
+    console.error("Send error:", err);
+    res.status(500).json({ error: "Message send failed" });
   }
 });
 
-// Start Express server
+/* ------------------ SERVER ------------------ */
+
 const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => {
-  console.log(`🌐 Server started on port ${PORT}`);
+  console.log(`🌐 Server listening on port ${PORT}`);
 });
-
-
-

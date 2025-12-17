@@ -7,13 +7,10 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "aws-sdk": "^2.1692.0",
-    "axios": "^1.12.2",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^4.18.2",
-    "puppeteer": "^24.26.1",
     "qrcode": "^1.5.1",
-    "whatsapp-web.js": "^1.34.1"
+    "whatsapp-web.js": "^1.34.2"
   }
 }
