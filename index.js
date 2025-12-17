@@ -1,112 +1,178 @@
-const express = require('express');
-const { Client, MessageMedia, LocalAuth } = require('whatsapp-web.js');
-const qrcode = require('qrcode');
+import express from "express";
+import qrcode from "qrcode";
+import pkg from "whatsapp-web.js";
+import cors from "cors";
+import dotenv from "dotenv";
+
+dotenv.config();
+
+const { Client, LocalAuth, MessageMedia, Events } = pkg;
 
 const app = express();
+app.use(cors());
+app.use(express.json());
 
-// Initialize the client with LocalAuth for session persistence
+/* ------------------ GLOBAL SAFETY ------------------ */
+
+process.on("unhandledRejection", (reason) => {
+  console.error("❌ Unhandled Rejection:", reason);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("❌ Uncaught Exception:", err);
+});
+
+/* ------------------ STATE ------------------ */
+
+let qrCodeData = "";
+let isClientReady = false;
+let lastQrTime = 0;
+
+/* ------------------ WHATSAPP CLIENT ------------------ */
+
 const client = new Client({
-  authStrategy: new LocalAuth(), // This will store session data locally
+  authStrategy: new LocalAuth({
+    clientId: "main-session",
+    dataPath: process.env.WWEBJS_AUTH_DIR || "/app/.wwebjs_auth",
+  }),
   puppeteer: {
-    headless: true,  // Run in headless mode for production
-    args: ['--no-sandbox', '--disable-setuid-sandbox'], // Common arguments for Docker
+    headless: "new",
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--disable-software-rasterizer",
+      "--no-zygote",
+      "--single-process",
+    ],
   },
 });
 
-// Middleware for parsing JSON requests
-app.use(express.json());
+/* ------------------ EVENTS ------------------ */
 
-// Store the QR code temporarily
-let qrCodeData = '';
+client.on(Events.QR_RECEIVED, async (qr) => {
+  try {
+    const now = Date.now();
+    if (now - lastQrTime < 10000) return; // debounce 10s
+    lastQrTime = now;
 
-// Event listener when the client is ready
-client.on('ready', () => {
-  console.log('Client is ready!');
+    qrCodeData = await qrcode.toDataURL(qr);
+    console.log("📸 QR Code generated");
+  } catch (err) {
+    console.error("QR generation error:", err);
+  }
 });
 
-// Event listener for QR code generation (without printing it to the terminal)
-client.on('qr', (qr) => {
-  qrcode.toDataURL(qr, (err, url) => {
-    if (err) {
-      console.log('Error generating QR code:', err);
-    } else {
-      qrCodeData = url;
-      console.log('QR code generated!');
-    }
+client.on(Events.AUTHENTICATED, () => {
+  console.log("✅ WhatsApp authenticated");
+});
+
+client.on(Events.READY, () => {
+  isClientReady = true;
+  qrCodeData = "";
+  console.log("🚀 WhatsApp client ready");
+});
+
+client.on(Events.DISCONNECTED, async (reason) => {
+  console.error("❌ WhatsApp disconnected:", reason);
+  isClientReady = false;
+
+  try {
+    await client.destroy();
+  } catch (e) {
+    console.error("Destroy error:", e);
+  }
+
+  setTimeout(() => {
+    console.log("♻️ Reinitializing WhatsApp client...");
+    client.initialize();
+  }, 5000);
+});
+
+/* ------------------ INIT ------------------ */
+
+console.log("⚙️ Initializing WhatsApp client...");
+client.initialize();
+
+/* ------------------ ROUTES ------------------ */
+
+app.get("/", (_, res) => {
+  res.send("🚀 Xoup WhatsApp Service Running");
+});
+
+app.get("/health", (_, res) => {
+  res.json({
+    ready: isClientReady,
+    uptime: process.uptime(),
   });
 });
 
-// Event listener for successful login
-client.on('authenticated', () => {
-  console.log('Client authenticated');
-});
-
-// Initialize the WhatsApp client
-client.initialize();
-
-// Route to get the current QR code as HTML
-app.get('/qr', (req, res) => {
-  if (qrCodeData) {
-    return res.send(`
+app.get("/qr", (_, res) => {
+  if (!qrCodeData) {
+    return res.status(404).send(`
       <html>
-        <head>
-          <title>WhatsApp QR Code</title>
-        </head>
-        <body style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh;">
-          <h1>Scan the QR Code to Login</h1>
-          <img src="${qrCodeData}" alt="QR Code" />
-        </body>
-      </html>
-    `);
-  } else {
-    return res.status(400).send(`
-      <html>
-        <head>
-          <title>No QR Code</title>
-        </head>
-        <body style="text-align: center; padding: 2rem;">
-          <h1>QR code not generated yet</h1>
+        <body style="text-align:center;padding:2rem;">
+          <h2>No QR code available</h2>
+          <p>Client may already be authenticated</p>
         </body>
       </html>
     `);
   }
+
+  res.send(`
+    <html>
+      <body style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;">
+        <h2>Scan QR Code</h2>
+        <img src="${qrCodeData}" width="300" />
+      </body>
+    </html>
+  `);
 });
 
-app.get("/",async(req,res)=>{
-  return res.status(200).send("hello xoup whatsapp ");
-})
-
-// Route to send a text message with an image
-app.post('/send', async (req, res) => {
+app.post("/send", async (req, res) => {
   const { number, message, imageUrl } = req.body;
+  const apiKey = req.headers["x-apikey"];
+
+  if (apiKey !== process.env.MY_API_KEY) {
+    return res.status(403).json({ error: "Invalid API Key" });
+  }
+
+  if (!isClientReady) {
+    return res.status(503).json({ error: "WhatsApp not ready" });
+  }
 
   if (!number || (!message && !imageUrl)) {
-    return res.status(400).json({ error: 'Number and at least message or imageUrl are required' });
+    return res.status(400).json({
+      error: "number + message or imageUrl required",
+    });
   }
 
   try {
     const chatId = `${number}@c.us`;
 
     if (imageUrl) {
-      // Get media and send with caption
-      const media = await MessageMedia.fromUrl(imageUrl);
-      await client.sendMessage(chatId, media, { caption: message || '' });
+      const media = await MessageMedia.fromUrl(imageUrl, {
+        unsafeMime: true,
+      });
+
+      await client.sendMessage(chatId, media, {
+        caption: message || "",
+      });
     } else {
-      // Send only text message
       await client.sendMessage(chatId, message);
     }
 
-    res.json({ success: true, message: 'Message sent successfully' });
-  } catch (error) {
-    console.error('Error sending message:', error);
-    res.status(500).json({ error: 'Failed to send message' });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Send error:", err);
+    res.status(500).json({ error: "Message send failed" });
   }
 });
 
+/* ------------------ SERVER ------------------ */
 
-
-
-// Start the server
-app.listen(8000, () => {
-  console.log('Server started on port 8000');
+const PORT = process.env.PORT || 8000;
+app.listen(PORT, () => {
+  console.log(`🌐 Server listening on port ${PORT}`);
 });
